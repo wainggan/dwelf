@@ -2,5 +2,11 @@
 name = "dwelf"
 version = "0.1.0"
 edition = "2024"
+description = "terrible image encoding library"
+license = "Apache-2.0"
+
+[features]
+default = ["qoi"]
+qoi = []
 
 [dependencies]

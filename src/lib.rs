@@ -2,6 +2,7 @@
 iterator based image format encoding.
 */
 
+#[cfg(feature = "qoi")]
 pub mod qoi;
 
 pub trait Format: Default {
