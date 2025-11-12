@@ -50,36 +50,28 @@ impl crate::Format for Qoi {
 	fn decode(self, data: &mut impl std::io::Read) -> Option<(Self::Header, impl Iterator<Item = (u8, u8, u8, u8)>)> {
 		
 		#[inline]
-		fn read_32(data: &mut impl std::io::Read) -> Option<u32> {
-			let mut buf = [0, 0, 0, 0];
+		fn read<const N: usize>(data: &mut impl std::io::Read) -> Option<[u8; N]> {
+			let mut buf = [0; N];
 			data.read_exact(&mut buf).ok()?;
-			Some(u32::from_be_bytes(buf))
-		}
-
-		#[inline]
-		fn read_8(data: &mut impl std::io::Read) -> Option<u8> {
-			let mut buf = [0];
-			data.read_exact(&mut buf).ok()?;
-			Some(u8::from_be_bytes(buf))
+			Some(buf)
 		}
 
 		// read header
 
-		let magic = read_32(data)?;
+		let magic = u32::from_be_bytes(read(data)?);
 		
 		if magic != MAGIC {
 			return None;
 		}
 
-		let width = read_32(data)?;
-		let height = read_32(data)?;
+		let width = u32::from_be_bytes(read(data)?);
+		let height = u32::from_be_bytes(read(data)?);
 
 		if width == 0 || height == 0 {
 			None?;
 		}
 
-		let channels = read_8(data)?;
-		let colorspace = read_8(data)?;
+		let [channels, colorspace] = read(data)?;
 
 		let header = QoiHeader {
 			width,
@@ -111,37 +103,45 @@ impl crate::Format for Qoi {
 			if run > 0 {
 				run -= 1;
 				total -= 1;
+
 				return Some(px);
 			}
 
-			let b0 = read_8(data)?;
+			let [b0] = read(data)?;
 
 			match b0 {
 				OP_RGB => {
-					px.0 = read_8(data)?;
-					px.1 = read_8(data)?;
-					px.2 = read_8(data)?;
+					let [r, g, b] = read(data)?;
+					px.0 = r;
+					px.1 = g;
+					px.2 = b;
+
 				}
 				OP_RGBA => {
-					px.0 = read_8(data)?;
-					px.1 = read_8(data)?;
-					px.2 = read_8(data)?;
-					px.3 = read_8(data)?;
+					let [r, g, b, a] = read(data)?;
+					px.0 = r;
+					px.1 = g;
+					px.2 = b;
+					px.3 = a;
+
 				}
 				c if (c & MASK) == OP_INDEX => {
 					let index = c & 0b00_111111;
 					px = array[index as usize];
+
 				}
 				c if (c & MASK) == OP_DIFF => {
 					let r_diff = ((c >> 4) & 0b11) as i8 - 2;
 					let g_diff = ((c >> 2) & 0b11) as i8 - 2;
 					let b_diff = (c & 0b11) as i8 - 2;
+
 					px.0 = px.0.wrapping_add_signed(r_diff);
 					px.1 = px.1.wrapping_add_signed(g_diff);
 					px.2 = px.2.wrapping_add_signed(b_diff);
+
 				}
 				c if (c & MASK) == OP_LUMA => {
-					let b1 = read_8(data)?;
+					let [b1] = read(data)?;
 
 					let g_diff = (b0 & 0b111111) as i8 - 32;
 
@@ -154,9 +154,11 @@ impl crate::Format for Qoi {
 					px.0 = px.0.wrapping_add_signed(r_diff);
 					px.1 = px.1.wrapping_add_signed(g_diff);
 					px.2 = px.2.wrapping_add_signed(b_diff);
+
 				}
 				c if (c & MASK) == OP_RUN => {
 					run = c & 0b111111;
+
 				}
 				_ => None?,
 			}
@@ -173,34 +175,27 @@ impl crate::Format for Qoi {
 	fn encode(self, data: impl Iterator<Item = (u8, u8, u8, u8)>, header: Self::Header, out: &mut impl std::io::Write) {
 
 		#[inline]
-		fn write_32(out: &mut impl std::io::Write, input: u32) {
-			_ = out.write(&input.to_be_bytes());
-		}
-
-		#[inline]
-		fn write_8(out: &mut impl std::io::Write, input: u8){
-			_ = out.write(&input.to_be_bytes());
+		fn write<const N: usize>(out: &mut impl std::io::Write, input: [u8; N]) {
+			_ = out.write(&input);
 		}
 		
-		write_32(out, MAGIC);
+		write(out, MAGIC.to_be_bytes());
 
-		write_32(out, header.width);
-		write_32(out, header.height);
+		write(out, header.width.to_be_bytes());
+		write(out, header.height.to_be_bytes());
 
-		write_8(
+		write(
 			out,
-			match header.channels {
-				QoiHeaderChannels::RGB => 3,
-				QoiHeaderChannels::RGBA => 4,
-			},
-		);
-
-		write_8(
-			out,
-			match header.colorspace {
-				QoiHeaderColorspace::SRGB => 0,
-				QoiHeaderColorspace::Linear => 1,
-			},
+			[
+				match header.channels {
+					QoiHeaderChannels::RGB => 3,
+					QoiHeaderChannels::RGBA => 4,
+				},
+				match header.colorspace {
+					QoiHeaderColorspace::SRGB => 0,
+					QoiHeaderColorspace::Linear => 1,
+				},
+			],
 		);
 
 		let mut px_prev = (0, 0, 0, 255);
@@ -213,27 +208,28 @@ impl crate::Format for Qoi {
 			if px == px_prev {
 				run += 1;
 				if run == 62 {
-					write_8(out, OP_RUN | (run - 1));
+					write(out, [OP_RUN | (run - 1)]);
 					run = 0;
 				}
-			} else {
+
+			}
+			else {
 				if run > 0 {
-					write_8(out, OP_RUN | (run - 1));
+					write(out, [OP_RUN | (run - 1)]);
 					run = 0;
 				}
 
 				let index = hash(px) & 63;
 				if array[index] == px {
-					write_8(out, OP_INDEX | index as u8);
-				} else if px.3 == px_prev.3 {
-					array[index] = px;
+					write(out, [OP_INDEX | index as u8]);
 
-					write_8(out, OP_RGBA);
-					write_8(out, px.0);
-					write_8(out, px.1);
-					write_8(out, px.2);
-					write_8(out, px.3);
-				} else {
+				}
+				else if px.3 == px_prev.3 {
+					array[index] = px;
+					write(out, [OP_RGBA, px.0, px.1, px.2, px.3]);
+
+				}
+				else {
 					let r_diff = px.0 as i8 - px_prev.0 as i8;
 					let g_diff = px.1 as i8 - px_prev.1 as i8;
 					let b_diff = px.2 as i8 - px_prev.2 as i8;
@@ -242,25 +238,28 @@ impl crate::Format for Qoi {
 					let b_diff_vg = b_diff - g_diff;
 
 					if (-2..=1).contains(&r_diff)
-					&& (-2..=1).contains(&g_diff)
-					&& (-2..=1).contains(&b_diff) {
+						&& (-2..=1).contains(&g_diff)
+						&& (-2..=1).contains(&b_diff)
+						{
 						let r = ((r_diff + 2) as u8) << 4;
 						let g = ((g_diff + 2) as u8) << 2;
 						let b = (b_diff + 2) as u8;
-						write_8(out, OP_DIFF | r | g | b);
-					} else if (-8..=7).contains(&r_diff_vg)
-					&& (-32..=31).contains(&g_diff)
-					&& (-8..=7).contains(&b_diff_vg) {
+						write(out, [OP_DIFF | r | g | b]);
+
+					}
+					else if (-8..=7).contains(&r_diff_vg)
+						&& (-32..=31).contains(&g_diff)
+						&& (-8..=7).contains(&b_diff_vg)
+						{
 						let r = ((r_diff_vg + 8) as u8) << 4;
 						let g = (g_diff + 32) as u8;
 						let b = (b_diff_vg + 8) as u8;
-						write_8(out, OP_LUMA | g);
-						write_8(out, r | b);
-					} else {
-						write_8(out, OP_RGB);
-						write_8(out, px.0);
-						write_8(out, px.1);
-						write_8(out, px.2);
+						write(out, [OP_LUMA | g, r | b]);
+
+					}
+					else {
+						write(out, [OP_RGBA, px.0, px.1, px.2]);
+
 					}
 				}
 			}
@@ -268,8 +267,7 @@ impl crate::Format for Qoi {
 			px_prev = px;
 		}
 
-		write_32(out, 0);
-		write_32(out, 1);
+		write(out, [0, 0, 0, 0, 0, 0, 0, 1]);
 	}
 }
 
